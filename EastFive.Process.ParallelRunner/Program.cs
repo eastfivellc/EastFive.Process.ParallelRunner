@@ -14,6 +14,8 @@ namespace EastFive.Process.ParallelRunner
         private static readonly int MaxMinutesToRun;
         private static readonly int MinMinutesToRestart;
         private static readonly int MaxMinutesToRestart;
+        private static readonly TimeSpan StartNewProcessesAfter;
+        private static readonly TimeSpan DoNotStartNewProcessesAfter;
 
         static Program()
         {
@@ -28,6 +30,10 @@ namespace EastFive.Process.ParallelRunner
                 throw new ArgumentException($"The {nameof(MinMinutesToRestart)} of {MinMinutesToRestart} must be a least 5.");
             if (!Int32.TryParse(ConfigurationManager.AppSettings[nameof(MaxMinutesToRestart)], out MaxMinutesToRestart) || MaxMinutesToRestart < 15)
                 throw new ArgumentException($"The {nameof(MaxMinutesToRestart)} of {MaxMinutesToRestart} must be a least 15.");
+            TimeSpan.TryParse(ConfigurationManager.AppSettings[nameof(StartNewProcessesAfter)], out StartNewProcessesAfter);
+            TimeSpan.TryParse(ConfigurationManager.AppSettings[nameof(DoNotStartNewProcessesAfter)], out DoNotStartNewProcessesAfter);
+            if (StartNewProcessesAfter == DoNotStartNewProcessesAfter && StartNewProcessesAfter != default(TimeSpan))
+                throw new ArgumentException($"{nameof(StartNewProcessesAfter)} and {nameof(DoNotStartNewProcessesAfter)} cannot both contain the same value.");
         }
 
         public static void Main(string[] args)
@@ -41,11 +47,35 @@ namespace EastFive.Process.ParallelRunner
             },tasks.ToArray());
         }
 
+        private void WaitUntilTimeOfDayToRun()
+        {
+            if (StartNewProcessesAfter == DoNotStartNewProcessesAfter && StartNewProcessesAfter == default(TimeSpan))
+                return;
+
+            var now = DateTime.Now;
+            var earlier = now.Date + StartNewProcessesAfter;
+            var later = now.Date + DoNotStartNewProcessesAfter;
+            if (StartNewProcessesAfter > DoNotStartNewProcessesAfter)
+                earlier = earlier.AddDays(-1);
+
+            var waitTime = new TimeSpan();
+            if (now < earlier)
+                waitTime = earlier - now;
+            else if (now > later)
+                waitTime = earlier.AddDays(1) - now;
+            if (waitTime.TotalSeconds > 0)
+            {
+                Console.WriteLine($"Sleeping...will wake at {now + waitTime}");
+                Thread.Sleep(waitTime);
+            }
+        }
+
         private void RunFromCmd(CancellationTokenSource source)
         {
             var noWorkCycles = 0;
             do
             {
+                WaitUntilTimeOfDayToRun();
                 try
                 {
                     using (var process = new System.Diagnostics.Process())
@@ -60,7 +90,7 @@ namespace EastFive.Process.ParallelRunner
                         if (!process.WaitForExit(
                             Convert.ToInt32(TimeSpan.FromMinutes(MaxMinutesToRun).TotalMilliseconds)) || !process.HasExited)
                         {
-                            Console.WriteLine($"Process {process.Id} had to be killed, check for locked providers");
+                            Console.WriteLine($"Process {process.Id} had to be killed, check for incomplete data.");
                             process.Kill();
                         }
                         var workMinutes = (process.ExitTime - process.StartTime).TotalMinutes;
